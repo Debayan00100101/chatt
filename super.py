@@ -5,7 +5,7 @@ import os
 import base64
 from io import BytesIO
 from streamlit_autorefresh import st_autorefresh
-st.set_page_config(page_title="Snowflake", page_icon="data:image/png;base64,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", layout="wide")
+st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 
 def _secure_secret_hash():
     parts = ["73757065723030313030313031"]
@@ -87,7 +87,7 @@ def show_login_ui():
         entered_hash = hashlib.sha256(secret_input.encode()).hexdigest()
         if entered_hash == SECRET_CODE_HASH:
             st.session_state["access_granted"] = True
-            st.success("Access code verified. Please set up your profile.")
+            st.success("Welcome! double click")
         else:
             st.error("Incorrect secret code. Access denied.")
 
@@ -103,7 +103,7 @@ def show_profile_setup():
             st.session_state["user"] = username
             st.session_state["user_avatar"] = avatar.read() if avatar else None
             st.session_state["logged_in"] = True
-            st.success(f"Welcome {username}!")
+            st.success(f"Welcome {username}! double click")
 
 
 def display_message(msg):
@@ -174,5 +174,6 @@ if __name__ == "__main__":
         show_profile_setup()
     else:
         show_login_ui()
+
 
 
