@@ -81,8 +81,8 @@ if "message_sent" not in st.session_state:
 
 
 def show_login_ui():
-    st.title("Super AI Secure Group Login")
-    secret_input = st.text_input("Enter Group Secret Code", type="password", placeholder="Secret Code")
+    st.title("Super Secure Group Login")
+    secret_input = st.text_input("Enter school Group Secret Code", type="password", placeholder="Secret Code")
     if st.button("Unlock"):
         entered_hash = hashlib.sha256(secret_input.encode()).hexdigest()
         if entered_hash == SECRET_CODE_HASH:
@@ -93,8 +93,8 @@ def show_login_ui():
 
 
 def show_profile_setup():
-    st.title("Set Your Username and Avatar")
-    username = st.text_input("Enter your username (display name)")
+    st.title("Set Your Username and profile picture")
+    username = st.text_input("Enter your username:")
     avatar = st.file_uploader("Upload your profile picture (optional)", type=["png", "jpg", "jpeg"])
     if st.button("Enter Chat"):
         if username.strip() == "":
@@ -146,7 +146,7 @@ def show_chat_ui():
     for msg in messages:
         display_message(msg)
 
-    prompt = st.chat_input("Send a message")
+    prompt = st.chat_input("Share and enjoy!")
     uploaded_file = st.file_uploader(
         "Upload image/video/audio",
         type=["png", "jpg", "jpeg", "mp4", "mp3", "wav"],
@@ -174,3 +174,4 @@ if __name__ == "__main__":
         show_profile_setup()
     else:
         show_login_ui()
+
