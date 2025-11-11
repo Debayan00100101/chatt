@@ -5,18 +5,33 @@ import os
 import base64
 from io import BytesIO
 from streamlit_autorefresh import st_autorefresh
+import shutil
+
 st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 
+# -----------------------
+# Paths & DB
+# -----------------------
+APP_DIR = os.path.join(os.path.expanduser("~"), ".snowflake_chat")
+os.makedirs(APP_DIR, exist_ok=True)
+
+DB_FILE = os.path.join(APP_DIR, "super_chat_app_v2.db")
+MEDIA_DIR = os.path.join(APP_DIR, "media")
+os.makedirs(MEDIA_DIR, exist_ok=True)
+
+# -----------------------
+# Secret code
+# -----------------------
 def _secure_secret_hash():
     parts = ["73757065723030313030313031"]
     secret_bytes = bytes.fromhex("".join(parts))
     return hashlib.sha256(secret_bytes).hexdigest()
 
-
 SECRET_CODE_HASH = _secure_secret_hash()
-DB_FILE = "super_chat_app_v2.db"
 
-
+# -----------------------
+# Database functions
+# -----------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -24,62 +39,98 @@ def init_db():
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT,
-            avatar BLOB,
+            avatar_path TEXT,
             msg_type TEXT,
-            content BLOB
+            content TEXT
         )
     """)
     conn.commit()
     conn.close()
 
-
 def save_message(username, avatar, msg_type, content):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    avatar_blob = base64.b64encode(avatar).decode() if isinstance(avatar, bytes) else None
-    content_blob = base64.b64encode(content.read()).decode() if hasattr(content, 'read') else content
-    c.execute("INSERT INTO messages (username, avatar, msg_type, content) VALUES (?, ?, ?, ?)",
-              (username, avatar_blob, msg_type, content_blob))
+
+    # Save avatar to file
+    avatar_path = None
+    if avatar:
+        avatar_name = f"{username}_avatar.png"
+        avatar_path = os.path.join(APP_DIR, avatar_name)
+        with open(avatar_path, "wb") as f:
+            f.write(avatar)
+
+    # Save content to file if media
+    if msg_type != "text" and hasattr(content, 'read'):
+        ext = content.type.split("/")[-1]
+        content_name = f"{username}_{hashlib.md5(content.read()).hexdigest()}.{ext}"
+        content_path = os.path.join(MEDIA_DIR, content_name)
+        content.seek(0)
+        with open(content_path, "wb") as f:
+            shutil.copyfileobj(content, f)
+        content_ref = content_path
+    else:
+        content_ref = content if isinstance(content, str) else content.decode()
+
+    c.execute(
+        "INSERT INTO messages (username, avatar_path, msg_type, content) VALUES (?, ?, ?, ?)",
+        (username, avatar_path, msg_type, content_ref)
+    )
     conn.commit()
     conn.close()
-
 
 def delete_message(message_id, username):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("DELETE FROM messages WHERE id = ? AND username = ?", (message_id, username))
+    # Fetch paths to delete files
+    c.execute("SELECT avatar_path, content FROM messages WHERE id=? AND username=?", (message_id, username))
+    row = c.fetchone()
+    if row:
+        avatar_path, content_ref = row
+        if avatar_path and os.path.exists(avatar_path):
+            os.remove(avatar_path)
+        if content_ref and os.path.exists(content_ref) and content_ref.startswith(MEDIA_DIR):
+            os.remove(content_ref)
+    c.execute("DELETE FROM messages WHERE id=? AND username=?", (message_id, username))
     conn.commit()
     conn.close()
-
 
 def load_messages():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT id, username, avatar, msg_type, content FROM messages ORDER BY id ASC")
+    c.execute("SELECT id, username, avatar_path, msg_type, content FROM messages ORDER BY id ASC")
     result = []
-    for msg_id, username, avatar_b64, msg_type, content_b64 in c.fetchall():
-        avatar = base64.b64decode(avatar_b64) if avatar_b64 else None
+    for msg_id, username, avatar_path, msg_type, content_ref in c.fetchall():
+        avatar = open(avatar_path, "rb").read() if avatar_path and os.path.exists(avatar_path) else None
         if msg_type == "text":
-            content = content_b64  # plain text string
+            content = content_ref
         else:
-            content = base64.b64decode(content_b64) if content_b64 else None  # binary media
-        result.append({"id": msg_id, "username": username, "avatar": avatar, "type": msg_type, "content": content})
+            content = open(content_ref, "rb").read() if content_ref and os.path.exists(content_ref) else None
+        result.append({
+            "id": msg_id,
+            "username": username,
+            "avatar": avatar,
+            "type": msg_type,
+            "content": content
+        })
     conn.close()
     return result
-
 
 if not os.path.exists(DB_FILE):
     init_db()
 
+# -----------------------
+# Session state defaults
+# -----------------------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
-
 if "file_uploaded" not in st.session_state:
     st.session_state.file_uploaded = False
 if "message_sent" not in st.session_state:
     st.session_state.message_sent = False
 
-
+# -----------------------
+# UI Components
+# -----------------------
 def show_login_ui():
     st.title("Snowflake Secure Group Login")
     secret_input = st.text_input("Enter school Group Secret Code", type="password", placeholder="Secret Code")
@@ -90,7 +141,6 @@ def show_login_ui():
             st.success("Welcome! double click")
         else:
             st.error("Incorrect secret code. Access denied.")
-
 
 def show_profile_setup():
     st.title("Set Your Username and profile picture")
@@ -104,7 +154,6 @@ def show_profile_setup():
             st.session_state["user_avatar"] = avatar.read() if avatar else None
             st.session_state["logged_in"] = True
             st.success(f"Welcome {username}! double click")
-
 
 def display_message(msg):
     is_own_message = msg["username"] == st.session_state.get("user", "")
@@ -127,7 +176,6 @@ def display_message(msg):
         if is_own_message:
             if st.button("Delete", key=f"del_{msg['id']}", use_container_width=False):
                 delete_message(msg["id"], msg["username"])
-
 
 def show_chat_ui():
     user = st.session_state.get("user", "Anonymous")
@@ -166,7 +214,9 @@ def show_chat_ui():
     if uploaded_file is None:
         st.session_state.file_uploaded = False
 
-
+# -----------------------
+# Main
+# -----------------------
 if __name__ == "__main__":
     if st.session_state.get("logged_in", False):
         show_chat_ui()
@@ -174,6 +224,3 @@ if __name__ == "__main__":
         show_profile_setup()
     else:
         show_login_ui()
-
-
-
