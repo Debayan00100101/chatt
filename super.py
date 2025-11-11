@@ -2,7 +2,6 @@ import streamlit as st
 import sqlite3
 import hashlib
 import os
-import base64
 from io import BytesIO
 from streamlit_autorefresh import st_autorefresh
 import shutil
@@ -62,7 +61,7 @@ def add_last_active_column():
 if not os.path.exists(DB_FILE):
     init_db()
 else:
-    add_last_active_column()  # Ensure last_active exists for old DBs
+    add_last_active_column()
 
 # -----------------------
 # Database functions
@@ -144,12 +143,12 @@ def load_messages():
     return result
 
 def get_online_users(timeout=120):
-    """Return usernames active in last `timeout` seconds"""
+    """Return usernames + avatar_path active in last `timeout` seconds"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     now = time.time()
-    c.execute("SELECT DISTINCT username FROM messages WHERE last_active>=?", (now - timeout,))
-    users = [row[0] for row in c.fetchall()]
+    c.execute("SELECT DISTINCT username, avatar_path FROM messages WHERE last_active>=?", (now - timeout,))
+    users = [{"username": row[0], "avatar_path": row[1]} for row in c.fetchall()]
     conn.close()
     return users
 
@@ -216,11 +215,15 @@ def show_chat_ui():
     user = st.session_state.get("user", "Anonymous")
     st.sidebar.success(f"Logged in as {user}")
 
-    # Show online users
+    # Show online users with avatars
     online_users = get_online_users(timeout=120)
     st.sidebar.markdown("**Online Users:**")
     for u in online_users:
-        st.sidebar.write(u)
+        avatar_data = open(u["avatar_path"], "rb").read() if u["avatar_path"] and os.path.exists(u["avatar_path"]) else None
+        cols = st.sidebar.columns([1, 3])
+        if avatar_data:
+            cols[0].image(avatar_data, width=30)
+        cols[1].write(u["username"])
 
     if st.sidebar.button("Log Out"):
         for key in ["user", "user_avatar", "logged_in", "access_granted", "file_uploaded", "message_sent"]:
