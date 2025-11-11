@@ -4,8 +4,8 @@ import hashlib
 import os
 from io import BytesIO
 from streamlit_autorefresh import st_autorefresh
-import shutil
 import time
+import shutil
 
 st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 
@@ -15,7 +15,7 @@ st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 APP_DIR = os.path.join(os.path.expanduser("~"), ".snowflake_chat")
 os.makedirs(APP_DIR, exist_ok=True)
 
-DB_FILE = os.path.join(APP_DIR, "super_chat_app_online.db")
+DB_FILE = os.path.join(APP_DIR, "chat_app.db")
 MEDIA_DIR = os.path.join(APP_DIR, "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
@@ -40,7 +40,6 @@ def init_db():
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT,
-            avatar_path TEXT,
             msg_type TEXT,
             content TEXT,
             timestamp REAL
@@ -50,7 +49,6 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
-            avatar_path TEXT,
             last_active REAL
         )
     """)
@@ -63,27 +61,19 @@ if not os.path.exists(DB_FILE):
 # -----------------------
 # User functions
 # -----------------------
-def register_user(username, avatar):
-    """Add or update user in users table"""
+def register_user(username):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    avatar_path = None
-    if avatar:
-        avatar_name = f"{username}_avatar.png"
-        avatar_path = os.path.join(APP_DIR, avatar_name)
-        with open(avatar_path, "wb") as f:
-            f.write(avatar)
     now = time.time()
     c.execute("""
-        INSERT INTO users (username, avatar_path, last_active)
-        VALUES (?, ?, ?)
-        ON CONFLICT(username) DO UPDATE SET avatar_path=excluded.avatar_path, last_active=excluded.last_active
-    """, (username, avatar_path, now))
+        INSERT INTO users (username, last_active)
+        VALUES (?, ?)
+        ON CONFLICT(username) DO UPDATE SET last_active=excluded.last_active
+    """, (username, now))
     conn.commit()
     conn.close()
 
 def update_user_activity(username):
-    """Update last_active timestamp for user"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     now = time.time()
@@ -92,95 +82,56 @@ def update_user_activity(username):
     conn.close()
 
 def get_online_users(timeout=15):
-    """Get all users active in last `timeout` seconds"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     now = time.time()
-    c.execute("SELECT username, avatar_path FROM users WHERE last_active>=?", (now - timeout,))
-    users = [{"username": row[0], "avatar_path": row[1]} for row in c.fetchall()]
+    c.execute("SELECT username FROM users WHERE last_active>=?", (now - timeout,))
+    users = [row[0] for row in c.fetchall()]
     conn.close()
     return users
+
+def check_left_users(timeout=15):
+    """Check users who have become inactive and mark them as left"""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    now = time.time()
+    c.execute("SELECT username FROM users WHERE last_active<?", (now - timeout,))
+    left_users = [row[0] for row in c.fetchall()]
+    for username in left_users:
+        save_system_message(f"{username} left the chat")
+        c.execute("DELETE FROM users WHERE username=?", (username,))
+    conn.commit()
+    conn.close()
 
 # -----------------------
 # Message functions
 # -----------------------
-def save_message(username, avatar, msg_type, content):
+def save_message(username, msg_type, content):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-
-    # Save avatar to file
-    avatar_path = None
-    if avatar:
-        avatar_name = f"{username}_avatar.png"
-        avatar_path = os.path.join(APP_DIR, avatar_name)
-        with open(avatar_path, "wb") as f:
-            f.write(avatar)
-
-    # Save content to file if media
-    if msg_type != "text" and hasattr(content, 'read'):
-        ext = content.type.split("/")[-1]
-        content_name = f"{username}_{hashlib.md5(content.read()).hexdigest()}.{ext}"
-        content_path = os.path.join(MEDIA_DIR, content_name)
-        content.seek(0)
-        with open(content_path, "wb") as f:
-            shutil.copyfileobj(content, f)
-        content_ref = content_path
-    else:
-        content_ref = content if isinstance(content, str) else content.decode()
-
     now = time.time()
-    c.execute(
-        "INSERT INTO messages (username, avatar_path, msg_type, content, timestamp) VALUES (?, ?, ?, ?, ?)",
-        (username, avatar_path, msg_type, content_ref, now)
-    )
+    c.execute("INSERT INTO messages (username, msg_type, content, timestamp) VALUES (?, ?, ?, ?)",
+              (username, msg_type, content, now))
     conn.commit()
     conn.close()
-    # Update user activity
     update_user_activity(username)
 
-def delete_message(message_id, username):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT avatar_path, content FROM messages WHERE id=? AND username=?", (message_id, username))
-    row = c.fetchone()
-    if row:
-        avatar_path, content_ref = row
-        if avatar_path and os.path.exists(avatar_path):
-            os.remove(avatar_path)
-        if content_ref and os.path.exists(content_ref) and content_ref.startswith(MEDIA_DIR):
-            os.remove(content_ref)
-    c.execute("DELETE FROM messages WHERE id=? AND username=?", (message_id, username))
-    conn.commit()
-    conn.close()
+def save_system_message(content):
+    save_message("System", "text", content)
 
 def load_messages():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT id, username, avatar_path, msg_type, content FROM messages ORDER BY id ASC")
-    result = []
-    for msg_id, username, avatar_path, msg_type, content_ref in c.fetchall():
-        avatar = open(avatar_path, "rb").read() if avatar_path and os.path.exists(avatar_path) else None
-        if msg_type == "text":
-            content = content_ref
-        else:
-            content = open(content_ref, "rb").read() if content_ref and os.path.exists(content_ref) else None
-        result.append({
-            "id": msg_id,
-            "username": username,
-            "avatar": avatar,
-            "type": msg_type,
-            "content": content
-        })
+    c.execute("SELECT id, username, msg_type, content FROM messages ORDER BY id ASC")
+    messages = [{"id": row[0], "username": row[1], "type": row[2], "content": row[3]} for row in c.fetchall()]
     conn.close()
-    return result
+    return messages
 
 # -----------------------
 # Session defaults
 # -----------------------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
-if "file_uploaded" not in st.session_state:
-    st.session_state.file_uploaded = False
 if "message_sent" not in st.session_state:
     st.session_state.message_sent = False
 
@@ -194,46 +145,27 @@ def show_login_ui():
         entered_hash = hashlib.sha256(secret_input.encode()).hexdigest()
         if entered_hash == SECRET_CODE_HASH:
             st.session_state["access_granted"] = True
-            st.success("Welcome! double click")
+            st.success("Welcome!")
         else:
             st.error("Incorrect secret code. Access denied.")
 
 def show_profile_setup():
-    st.title("Set Your Username and profile picture")
+    st.title("Set Your Username")
     username = st.text_input("Enter your username:")
-    avatar = st.file_uploader("Upload your profile picture (optional)", type=["png", "jpg", "jpeg"])
     if st.button("Enter Chat"):
         if username.strip() == "":
             st.error("Please enter a username.")
         else:
             st.session_state["user"] = username
-            st.session_state["user_avatar"] = avatar.read() if avatar else None
             st.session_state["logged_in"] = True
-            # Register user in DB even if no messages
-            register_user(username, st.session_state.get("user_avatar"))
-            st.success(f"Welcome {username}! double click")
+            register_user(username)
+            save_system_message(f"{username} joined the chat!")
 
 def display_message(msg):
-    is_own_message = msg["username"] == st.session_state.get("user", "")
-    avatar_img = BytesIO(msg["avatar"]) if msg["avatar"] else None
-
-    with st.chat_message(msg["username"], avatar=avatar_img):
-        st.markdown(f"**{msg['username']}**")
-        if msg["type"] == "text":
-            st.markdown(msg["content"])
-        elif msg["type"] == "image":
-            media = BytesIO(msg["content"])
-            st.image(media)
-        elif msg["type"] == "video":
-            media = BytesIO(msg["content"])
-            st.video(media)
-        elif msg["type"] == "audio":
-            media = BytesIO(msg["content"])
-            st.audio(media)
-
-        if is_own_message:
-            if st.button("Delete", key=f"del_{msg['id']}", use_container_width=False):
-                delete_message(msg["id"], msg["username"])
+    if msg["username"] == "System":
+        st.markdown(f"**⚠ {msg['content']}**")
+    else:
+        st.markdown(f"**{msg['username']}**: {msg['content']}")
 
 def show_chat_ui():
     user = st.session_state.get("user", "Anonymous")
@@ -242,49 +174,36 @@ def show_chat_ui():
     # Auto-refresh every 2 seconds
     st_autorefresh(interval=2000, key="chat_autorefresh")
 
-    # Update last_active for heartbeat
+    # Update heartbeat
     update_user_activity(user)
 
-    # Show online users (users active in last 15s)
-    ONLINE_TIMEOUT = 15
-    online_users = get_online_users(timeout=ONLINE_TIMEOUT)
+    # Check for users who left
+    check_left_users(timeout=15)
+
+    # Show online users
+    online_users = get_online_users(timeout=15)
     st.sidebar.markdown("**Online Users:**")
     for u in online_users:
-        avatar_data = open(u["avatar_path"], "rb").read() if u["avatar_path"] and os.path.exists(u["avatar_path"]) else None
-        cols = st.sidebar.columns([1, 3])
-        if avatar_data:
-            cols[0].image(avatar_data, width=30)
-        cols[1].write(u["username"])
+        st.sidebar.write(u)
 
     if st.sidebar.button("Log Out"):
-        for key in ["user", "user_avatar", "logged_in", "access_granted", "file_uploaded", "message_sent"]:
+        save_system_message(f"{user} left the chat")
+        for key in ["user", "logged_in", "message_sent"]:
             if key in st.session_state:
                 del st.session_state[key]
 
-    st.title("Super")
+    # Show messages
     messages = load_messages()
     for msg in messages:
         display_message(msg)
 
-    prompt = st.chat_input("Share and enjoy!")
-    uploaded_file = st.file_uploader(
-        "Upload image/video/audio",
-        type=["png", "jpg", "jpeg", "mp4", "mp3", "wav"],
-        label_visibility="collapsed",
-        key="file_uploader"
-    )
-
+    # Chat input
+    prompt = st.chat_input("Type a message...")
     if prompt and not st.session_state.message_sent:
-        save_message(st.session_state["user"], st.session_state.get("user_avatar"), "text", prompt)
+        save_message(user, "text", prompt)
         st.session_state.message_sent = True
     if not prompt:
         st.session_state.message_sent = False
-
-    if uploaded_file is not None and not st.session_state.file_uploaded:
-        save_message(st.session_state["user"], st.session_state.get("user_avatar"), uploaded_file.type.split("/")[0], uploaded_file)
-        st.session_state.file_uploaded = True
-    if uploaded_file is None:
-        st.session_state.file_uploaded = False
 
 # -----------------------
 # Main
