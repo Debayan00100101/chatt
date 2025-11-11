@@ -15,7 +15,7 @@ st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 APP_DIR = os.path.join(os.path.expanduser("~"), ".snowflake_chat")
 os.makedirs(APP_DIR, exist_ok=True)
 
-DB_FILE = os.path.join(APP_DIR, "super_chat_sidebar.db")
+DB_FILE = os.path.join(APP_DIR, "super_chat_delete_alert.db")
 MEDIA_DIR = os.path.join(APP_DIR, "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
@@ -181,8 +181,8 @@ def save_system_message(text):
 def load_system_messages(limit=50):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT content FROM system_messages ORDER BY id DESC LIMIT ?", (limit,))
-    msgs = [row[0] for row in c.fetchall()]
+    c.execute("SELECT id, content FROM system_messages ORDER BY id DESC LIMIT ?", (limit,))
+    msgs = [{"id": row[0], "content": row[1]} for row in c.fetchall()]
     conn.close()
     return msgs[::-1]  # oldest first
 
@@ -195,6 +195,8 @@ if "file_uploaded" not in st.session_state:
     st.session_state.file_uploaded = False
 if "message_sent" not in st.session_state:
     st.session_state.message_sent = False
+if "dismissed_alerts" not in st.session_state:
+    st.session_state.dismissed_alerts = set()  # store system message IDs dismissed by this user
 
 # -----------------------
 # UI Components
@@ -251,13 +253,18 @@ def show_chat_ui():
     st.sidebar.markdown("### Alerts")
     system_msgs = load_system_messages(limit=20)
     for msg in system_msgs:
-        st.sidebar.info(msg)
+        if msg["id"] not in st.session_state.dismissed_alerts:
+            cols = st.sidebar.columns([4,1])
+            cols[0].info(msg["content"])
+            if cols[1].button("X", key=f"del_{msg['id']}"):
+                st.session_state.dismissed_alerts.add(msg["id"])
 
     if st.sidebar.button("Log Out"):
         remove_user(user)
         for key in ["user", "user_avatar", "logged_in", "access_granted", "file_uploaded", "message_sent"]:
             if key in st.session_state:
                 del st.session_state[key]
+        st.session_state.dismissed_alerts.clear()
 
     # Main chat area
     messages = load_messages()
