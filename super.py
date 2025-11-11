@@ -31,7 +31,7 @@ def _secure_secret_hash():
 SECRET_CODE_HASH = _secure_secret_hash()
 
 # -----------------------
-# Database functions
+# DB Initialization & Migration
 # -----------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -49,6 +49,24 @@ def init_db():
     conn.commit()
     conn.close()
 
+def add_last_active_column():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("PRAGMA table_info(messages)")
+    columns = [col[1] for col in c.fetchall()]
+    if "last_active" not in columns:
+        c.execute("ALTER TABLE messages ADD COLUMN last_active REAL")
+        conn.commit()
+    conn.close()
+
+if not os.path.exists(DB_FILE):
+    init_db()
+else:
+    add_last_active_column()  # Ensure last_active exists for old DBs
+
+# -----------------------
+# Database functions
+# -----------------------
 def save_message(username, avatar, msg_type, content):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -92,7 +110,6 @@ def update_last_active(username):
 def delete_message(message_id, username):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Fetch paths to delete files
     c.execute("SELECT avatar_path, content FROM messages WHERE id=? AND username=?", (message_id, username))
     row = c.fetchone()
     if row:
@@ -126,8 +143,8 @@ def load_messages():
     conn.close()
     return result
 
-def get_online_users(timeout=60):
-    """Return usernames who were active in the last `timeout` seconds"""
+def get_online_users(timeout=120):
+    """Return usernames active in last `timeout` seconds"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     now = time.time()
@@ -135,9 +152,6 @@ def get_online_users(timeout=60):
     users = [row[0] for row in c.fetchall()]
     conn.close()
     return users
-
-if not os.path.exists(DB_FILE):
-    init_db()
 
 # -----------------------
 # Session state defaults
@@ -202,7 +216,7 @@ def show_chat_ui():
     user = st.session_state.get("user", "Anonymous")
     st.sidebar.success(f"Logged in as {user}")
 
-    # Show online users in sidebar
+    # Show online users
     online_users = get_online_users(timeout=120)
     st.sidebar.markdown("**Online Users:**")
     for u in online_users:
@@ -213,10 +227,10 @@ def show_chat_ui():
             if key in st.session_state:
                 del st.session_state[key]
 
-    # Auto-refresh every 2 seconds
+    # Auto-refresh
     st_autorefresh(interval=2000, key="chat_autorefresh")
 
-    # Update last active timestamp for current user
+    # Update last_active timestamp
     update_last_active(user)
 
     st.title("Super")
