@@ -6,6 +6,7 @@ import base64
 from io import BytesIO
 from streamlit_autorefresh import st_autorefresh
 import shutil
+import time
 
 st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 
@@ -41,7 +42,8 @@ def init_db():
             username TEXT,
             avatar_path TEXT,
             msg_type TEXT,
-            content TEXT
+            content TEXT,
+            last_active REAL
         )
     """)
     conn.commit()
@@ -71,10 +73,19 @@ def save_message(username, avatar, msg_type, content):
     else:
         content_ref = content if isinstance(content, str) else content.decode()
 
+    now = time.time()
     c.execute(
-        "INSERT INTO messages (username, avatar_path, msg_type, content) VALUES (?, ?, ?, ?)",
-        (username, avatar_path, msg_type, content_ref)
+        "INSERT INTO messages (username, avatar_path, msg_type, content, last_active) VALUES (?, ?, ?, ?, ?)",
+        (username, avatar_path, msg_type, content_ref, now)
     )
+    conn.commit()
+    conn.close()
+
+def update_last_active(username):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    now = time.time()
+    c.execute("UPDATE messages SET last_active=? WHERE username=? ORDER BY id DESC LIMIT 1", (now, username))
     conn.commit()
     conn.close()
 
@@ -114,6 +125,16 @@ def load_messages():
         })
     conn.close()
     return result
+
+def get_online_users(timeout=60):
+    """Return usernames who were active in the last `timeout` seconds"""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    now = time.time()
+    c.execute("SELECT DISTINCT username FROM messages WHERE last_active>=?", (now - timeout,))
+    users = [row[0] for row in c.fetchall()]
+    conn.close()
+    return users
 
 if not os.path.exists(DB_FILE):
     init_db()
@@ -181,6 +202,12 @@ def show_chat_ui():
     user = st.session_state.get("user", "Anonymous")
     st.sidebar.success(f"Logged in as {user}")
 
+    # Show online users in sidebar
+    online_users = get_online_users(timeout=120)
+    st.sidebar.markdown("**Online Users:**")
+    for u in online_users:
+        st.sidebar.write(u)
+
     if st.sidebar.button("Log Out"):
         for key in ["user", "user_avatar", "logged_in", "access_granted", "file_uploaded", "message_sent"]:
             if key in st.session_state:
@@ -188,6 +215,9 @@ def show_chat_ui():
 
     # Auto-refresh every 2 seconds
     st_autorefresh(interval=2000, key="chat_autorefresh")
+
+    # Update last active timestamp for current user
+    update_last_active(user)
 
     st.title("Super")
     messages = load_messages()
