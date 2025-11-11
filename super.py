@@ -15,7 +15,7 @@ st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 APP_DIR = os.path.join(os.path.expanduser("~"), ".snowflake_chat")
 os.makedirs(APP_DIR, exist_ok=True)
 
-DB_FILE = os.path.join(APP_DIR, "super_chat_app_leave_msg.db")
+DB_FILE = os.path.join(APP_DIR, "super_chat_app_alert.db")
 MEDIA_DIR = os.path.join(APP_DIR, "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
@@ -96,7 +96,8 @@ def remove_user(username):
     c.execute("DELETE FROM users WHERE username=?", (username,))
     conn.commit()
     conn.close()
-    save_system_message(f"{username} left the chat")
+    # Trigger alert via JS
+    st.session_state["last_alert"] = f"{username} left the chat"
 
 def get_online_users(timeout=15):
     conn = sqlite3.connect(DB_FILE)
@@ -141,10 +142,6 @@ def save_message(username, avatar, msg_type, content):
     conn.close()
     update_user_activity(username)
 
-def save_system_message(text):
-    """Insert a system message"""
-    save_message("System", None, "text", text)
-
 def load_messages():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -175,6 +172,8 @@ if "file_uploaded" not in st.session_state:
     st.session_state.file_uploaded = False
 if "message_sent" not in st.session_state:
     st.session_state.message_sent = False
+if "last_alert" not in st.session_state:
+    st.session_state.last_alert = ""
 
 # -----------------------
 # UI Components
@@ -202,7 +201,7 @@ def show_profile_setup():
             st.session_state["user_avatar"] = avatar.read() if avatar else None
             st.session_state["logged_in"] = True
             register_user(username, st.session_state.get("user_avatar"))
-            save_system_message(f"{username} joined the chat")
+            st.session_state["last_alert"] = f"{username} joined the chat"
 
 def display_message(msg):
     avatar_img = BytesIO(msg["avatar"]) if msg["avatar"] else None
@@ -259,6 +258,14 @@ def show_chat_ui():
         st.session_state.file_uploaded = True
     if uploaded_file is None:
         st.session_state.file_uploaded = False
+
+    # -----------------------
+    # JS alert for join/leave
+    # -----------------------
+    if st.session_state.last_alert:
+        alert_msg = st.session_state.last_alert
+        st.components.v1.html(f"<script>alert('{alert_msg}');</script>", height=0)
+        st.session_state.last_alert = ""  # reset after alert
 
 # -----------------------
 # Main
