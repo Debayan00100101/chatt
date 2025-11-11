@@ -15,7 +15,7 @@ st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 APP_DIR = os.path.join(os.path.expanduser("~"), ".snowflake_chat")
 os.makedirs(APP_DIR, exist_ok=True)
 
-DB_FILE = os.path.join(APP_DIR, "super_chat_app_v2.db")
+DB_FILE = os.path.join(APP_DIR, "super_chat_app_v3.db")
 MEDIA_DIR = os.path.join(APP_DIR, "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
@@ -30,11 +30,12 @@ def _secure_secret_hash():
 SECRET_CODE_HASH = _secure_secret_hash()
 
 # -----------------------
-# DB Initialization & Migration
+# DB Initialization
 # -----------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    # Messages table
     c.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,29 +43,66 @@ def init_db():
             avatar_path TEXT,
             msg_type TEXT,
             content TEXT,
+            timestamp REAL
+        )
+    """)
+    # Users table
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            avatar_path TEXT,
             last_active REAL
         )
     """)
     conn.commit()
     conn.close()
 
-def add_last_active_column():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("PRAGMA table_info(messages)")
-    columns = [col[1] for col in c.fetchall()]
-    if "last_active" not in columns:
-        c.execute("ALTER TABLE messages ADD COLUMN last_active REAL")
-        conn.commit()
-    conn.close()
-
 if not os.path.exists(DB_FILE):
     init_db()
-else:
-    add_last_active_column()
 
 # -----------------------
-# Database functions
+# User functions
+# -----------------------
+def register_user(username, avatar):
+    """Add or update user in users table"""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    avatar_path = None
+    if avatar:
+        avatar_name = f"{username}_avatar.png"
+        avatar_path = os.path.join(APP_DIR, avatar_name)
+        with open(avatar_path, "wb") as f:
+            f.write(avatar)
+    now = time.time()
+    c.execute("""
+        INSERT INTO users (username, avatar_path, last_active)
+        VALUES (?, ?, ?)
+        ON CONFLICT(username) DO UPDATE SET avatar_path=excluded.avatar_path, last_active=excluded.last_active
+    """, (username, avatar_path, now))
+    conn.commit()
+    conn.close()
+
+def update_user_activity(username):
+    """Update last_active timestamp for user"""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    now = time.time()
+    c.execute("UPDATE users SET last_active=? WHERE username=?", (now, username))
+    conn.commit()
+    conn.close()
+
+def get_online_users(timeout=120):
+    """Get all users active in last `timeout` seconds"""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    now = time.time()
+    c.execute("SELECT username, avatar_path FROM users WHERE last_active>=?", (now - timeout,))
+    users = [{"username": row[0], "avatar_path": row[1]} for row in c.fetchall()]
+    conn.close()
+    return users
+
+# -----------------------
+# Message functions
 # -----------------------
 def save_message(username, avatar, msg_type, content):
     conn = sqlite3.connect(DB_FILE)
@@ -92,19 +130,13 @@ def save_message(username, avatar, msg_type, content):
 
     now = time.time()
     c.execute(
-        "INSERT INTO messages (username, avatar_path, msg_type, content, last_active) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO messages (username, avatar_path, msg_type, content, timestamp) VALUES (?, ?, ?, ?, ?)",
         (username, avatar_path, msg_type, content_ref, now)
     )
     conn.commit()
     conn.close()
-
-def update_last_active(username):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    now = time.time()
-    c.execute("UPDATE messages SET last_active=? WHERE username=? ORDER BY id DESC LIMIT 1", (now, username))
-    conn.commit()
-    conn.close()
+    # Update user activity
+    update_user_activity(username)
 
 def delete_message(message_id, username):
     conn = sqlite3.connect(DB_FILE)
@@ -142,18 +174,8 @@ def load_messages():
     conn.close()
     return result
 
-def get_online_users(timeout=120):
-    """Return usernames + avatar_path active in last `timeout` seconds"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    now = time.time()
-    c.execute("SELECT DISTINCT username, avatar_path FROM messages WHERE last_active>=?", (now - timeout,))
-    users = [{"username": row[0], "avatar_path": row[1]} for row in c.fetchall()]
-    conn.close()
-    return users
-
 # -----------------------
-# Session state defaults
+# Session defaults
 # -----------------------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -187,6 +209,8 @@ def show_profile_setup():
             st.session_state["user"] = username
             st.session_state["user_avatar"] = avatar.read() if avatar else None
             st.session_state["logged_in"] = True
+            # Register user in DB even if no messages
+            register_user(username, st.session_state.get("user_avatar"))
             st.success(f"Welcome {username}! double click")
 
 def display_message(msg):
@@ -234,7 +258,7 @@ def show_chat_ui():
     st_autorefresh(interval=2000, key="chat_autorefresh")
 
     # Update last_active timestamp
-    update_last_active(user)
+    update_user_activity(user)
 
     st.title("Super")
     messages = load_messages()
