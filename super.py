@@ -15,7 +15,7 @@ st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 APP_DIR = os.path.join(os.path.expanduser("~"), ".snowflake_chat")
 os.makedirs(APP_DIR, exist_ok=True)
 
-DB_FILE = os.path.join(APP_DIR, "super_chat_app_v3.db")
+DB_FILE = os.path.join(APP_DIR, "super_chat_app_v4.db")
 MEDIA_DIR = os.path.join(APP_DIR, "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
@@ -239,6 +239,12 @@ def show_chat_ui():
     user = st.session_state.get("user", "Anonymous")
     st.sidebar.success(f"Logged in as {user}")
 
+    # Auto-refresh
+    st_autorefresh(interval=2000, key="chat_autorefresh")
+
+    # Update last_active timestamp
+    update_user_activity(user)
+
     # Show online users with avatars
     online_users = get_online_users(timeout=120)
     st.sidebar.markdown("**Online Users:**")
@@ -253,12 +259,6 @@ def show_chat_ui():
         for key in ["user", "user_avatar", "logged_in", "access_granted", "file_uploaded", "message_sent"]:
             if key in st.session_state:
                 del st.session_state[key]
-
-    # Auto-refresh
-    st_autorefresh(interval=2000, key="chat_autorefresh")
-
-    # Update last_active timestamp
-    update_user_activity(user)
 
     st.title("Super")
     messages = load_messages()
