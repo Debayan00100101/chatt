@@ -104,7 +104,6 @@ def remove_user(username):
     c.execute("DELETE FROM users WHERE username=?", (username,))
     conn.commit()
     conn.close()
-    save_system_message(f"{username} left the chat")
 
 def get_online_users(timeout=15):
     conn = sqlite3.connect(DB_FILE)
@@ -259,7 +258,10 @@ def show_chat_ui():
             if cols[1].button("X", key=f"del_{msg['id']}"):
                 st.session_state.dismissed_alerts.add(msg["id"])
 
+    # Logout button
     if st.sidebar.button("Log Out"):
+        # Save "left" message before removing user and clearing session
+        save_system_message(f"{user} left the chat")
         remove_user(user)
         for key in ["user", "user_avatar", "logged_in", "access_granted", "file_uploaded", "message_sent"]:
             if key in st.session_state:
