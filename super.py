@@ -15,7 +15,7 @@ st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 APP_DIR = os.path.join(os.path.expanduser("~"), ".snowflake_chat")
 os.makedirs(APP_DIR, exist_ok=True)
 
-DB_FILE = os.path.join(APP_DIR, "super_chat_app_alert.db")
+DB_FILE = os.path.join(APP_DIR, "super_chat_sidebar.db")
 MEDIA_DIR = os.path.join(APP_DIR, "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
@@ -54,6 +54,14 @@ def init_db():
             last_active REAL
         )
     """)
+    # System messages table
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS system_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT,
+            timestamp REAL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -80,6 +88,7 @@ def register_user(username, avatar):
     """, (username, avatar_path, now))
     conn.commit()
     conn.close()
+    save_system_message(f"{username} joined the chat")
 
 def update_user_activity(username):
     conn = sqlite3.connect(DB_FILE)
@@ -90,14 +99,12 @@ def update_user_activity(username):
     conn.close()
 
 def remove_user(username):
-    """Call when user leaves page"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("DELETE FROM users WHERE username=?", (username,))
     conn.commit()
     conn.close()
-    # Trigger alert via JS
-    st.session_state["last_alert"] = f"{username} left the chat"
+    save_system_message(f"{username} left the chat")
 
 def get_online_users(timeout=15):
     conn = sqlite3.connect(DB_FILE)
@@ -163,6 +170,22 @@ def load_messages():
     conn.close()
     return result
 
+def save_system_message(text):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    now = time.time()
+    c.execute("INSERT INTO system_messages (content, timestamp) VALUES (?, ?)", (text, now))
+    conn.commit()
+    conn.close()
+
+def load_system_messages(limit=50):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT content FROM system_messages ORDER BY id DESC LIMIT ?", (limit,))
+    msgs = [row[0] for row in c.fetchall()]
+    conn.close()
+    return msgs[::-1]  # oldest first
+
 # -----------------------
 # Session defaults
 # -----------------------
@@ -172,8 +195,6 @@ if "file_uploaded" not in st.session_state:
     st.session_state.file_uploaded = False
 if "message_sent" not in st.session_state:
     st.session_state.message_sent = False
-if "last_alert" not in st.session_state:
-    st.session_state.last_alert = ""
 
 # -----------------------
 # UI Components
@@ -201,7 +222,6 @@ def show_profile_setup():
             st.session_state["user_avatar"] = avatar.read() if avatar else None
             st.session_state["logged_in"] = True
             register_user(username, st.session_state.get("user_avatar"))
-            st.session_state["last_alert"] = f"{username} joined the chat"
 
 def display_message(msg):
     avatar_img = BytesIO(msg["avatar"]) if msg["avatar"] else None
@@ -211,15 +231,14 @@ def display_message(msg):
 
 def show_chat_ui():
     user = st.session_state.get("user", "Anonymous")
-    st.sidebar.success(f"Logged in as {user}")
-
+    
     # Auto-refresh every 2 sec
     st_autorefresh(interval=2000, key="chat_autorefresh")
     update_user_activity(user)
 
-    # Sidebar online users
+    # Sidebar: online users
+    st.sidebar.markdown("### Online Users")
     online_users = get_online_users(timeout=15)
-    st.sidebar.markdown("**Online Users:**")
     for u in online_users:
         avatar_data = open(u["avatar_path"], "rb").read() if u["avatar_path"] and os.path.exists(u["avatar_path"]) else None
         cols = st.sidebar.columns([1, 3])
@@ -227,13 +246,20 @@ def show_chat_ui():
             cols[0].image(avatar_data, width=30)
         cols[1].write(u["username"])
 
+    # Sidebar: system messages
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Alerts")
+    system_msgs = load_system_messages(limit=20)
+    for msg in system_msgs:
+        st.sidebar.info(msg)
+
     if st.sidebar.button("Log Out"):
         remove_user(user)
         for key in ["user", "user_avatar", "logged_in", "access_granted", "file_uploaded", "message_sent"]:
             if key in st.session_state:
                 del st.session_state[key]
 
-    # Show messages
+    # Main chat area
     messages = load_messages()
     for msg in messages:
         display_message(msg)
@@ -258,14 +284,6 @@ def show_chat_ui():
         st.session_state.file_uploaded = True
     if uploaded_file is None:
         st.session_state.file_uploaded = False
-
-    # -----------------------
-    # JS alert for join/leave
-    # -----------------------
-    if st.session_state.last_alert:
-        alert_msg = st.session_state.last_alert
-        st.components.v1.html(f"<script>alert('{alert_msg}');</script>", height=0)
-        st.session_state.last_alert = ""  # reset after alert
 
 # -----------------------
 # Main
