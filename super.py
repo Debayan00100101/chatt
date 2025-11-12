@@ -163,6 +163,23 @@ def load_messages():
     conn.close()
     return result
 
+def delete_message(msg_id, username):
+    """Only delete if message belongs to the same user"""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT username, content FROM messages WHERE id=?", (msg_id,))
+    row = c.fetchone()
+    if row and row[0] == username:
+        content_path = row[1]
+        if os.path.exists(content_path):
+            try:
+                os.remove(content_path)
+            except:
+                pass
+        c.execute("DELETE FROM messages WHERE id=?", (msg_id,))
+    conn.commit()
+    conn.close()
+
 def save_system_message(text):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -219,12 +236,17 @@ def show_profile_setup():
             register_user(username, st.session_state.get("user_avatar"))
 
 # -----------------------
-# UPDATED MEDIA RENDERING
+# Display messages with delete button
 # -----------------------
-def display_message(msg):
+def display_message(msg, current_user):
     avatar_img = BytesIO(msg["avatar"]) if msg["avatar"] else None
     with st.chat_message(msg["username"], avatar=avatar_img):
-        st.markdown(f"**{msg['username']}**")
+        cols = st.columns([10, 1])
+        cols[0].markdown(f"**{msg['username']}**")
+        if msg["username"] == current_user:
+            if cols[1].button("delete", key=f"delmsg_{msg['id']}"):
+                delete_message(msg["id"], current_user)
+                st.experimental_rerun()
 
         if msg["type"] == "text":
             st.markdown(msg["content"])
@@ -263,11 +285,9 @@ def display_message(msg):
 # -----------------------
 def show_chat_ui():
     user = st.session_state.get("user", "Anonymous")
-    
     st_autorefresh(interval=2000, key="chat_autorefresh")
     update_user_activity(user)
 
-    # Sidebar
     st.sidebar.markdown("### Online Users")
     online_users = get_online_users(timeout=15)
     for u in online_users:
@@ -284,7 +304,7 @@ def show_chat_ui():
         if msg["id"] not in st.session_state.dismissed_alerts:
             cols = st.sidebar.columns([4,1])
             cols[0].info(msg["content"])
-            if cols[1].button("X", key=f"del_{msg['id']}"):
+            if cols[1].button("X", key=f"del_alert_{msg['id']}"):
                 st.session_state.dismissed_alerts.add(msg["id"])
 
     if st.sidebar.button("Log Out"):
@@ -295,10 +315,9 @@ def show_chat_ui():
                 del st.session_state[key]
         st.session_state.dismissed_alerts.clear()
 
-    # Main chat
     messages = load_messages()
     for msg in messages:
-        display_message(msg)
+        display_message(msg, user)
 
     prompt = st.chat_input("Share and enjoy!")
     uploaded_file = st.file_uploader(
