@@ -6,6 +6,7 @@ from io import BytesIO
 from streamlit_autorefresh import st_autorefresh
 import shutil
 import time
+import base64
 
 st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 
@@ -35,7 +36,6 @@ SECRET_CODE_HASH = _secure_secret_hash()
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Messages table
     c.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,7 +46,6 @@ def init_db():
             timestamp REAL
         )
     """)
-    # Users table
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -54,7 +53,6 @@ def init_db():
             last_active REAL
         )
     """)
-    # System messages table
     c.execute("""
         CREATE TABLE IF NOT EXISTS system_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,12 +127,12 @@ def save_message(username, avatar, msg_type, content):
             f.write(avatar)
 
     if msg_type != "text" and hasattr(content, 'read'):
-        ext = content.type.split("/")[-1]
-        content_name = f"{username}_{hashlib.md5(content.read()).hexdigest()}.{ext}"
+        ext = content.type.split("/")[-1] if hasattr(content, 'type') else "bin"
+        content_bytes = content.read()
+        content_name = f"{username}_{hashlib.md5(content_bytes).hexdigest()}.{ext}"
         content_path = os.path.join(MEDIA_DIR, content_name)
-        content.seek(0)
         with open(content_path, "wb") as f:
-            shutil.copyfileobj(content, f)
+            f.write(content_bytes)
         content_ref = content_path
     else:
         content_ref = content if isinstance(content, str) else content.decode()
@@ -155,16 +153,12 @@ def load_messages():
     result = []
     for msg_id, username, avatar_path, msg_type, content_ref in c.fetchall():
         avatar = open(avatar_path, "rb").read() if avatar_path and os.path.exists(avatar_path) else None
-        if msg_type == "text":
-            content = content_ref
-        else:
-            content = open(content_ref, "rb").read() if content_ref and os.path.exists(content_ref) else None
         result.append({
             "id": msg_id,
             "username": username,
             "avatar": avatar,
             "type": msg_type,
-            "content": content
+            "content": content_ref
         })
     conn.close()
     return result
@@ -183,7 +177,7 @@ def load_system_messages(limit=50):
     c.execute("SELECT id, content FROM system_messages ORDER BY id DESC LIMIT ?", (limit,))
     msgs = [{"id": row[0], "content": row[1]} for row in c.fetchall()]
     conn.close()
-    return msgs[::-1]  # oldest first
+    return msgs[::-1]
 
 # -----------------------
 # Session defaults
@@ -195,7 +189,7 @@ if "file_uploaded" not in st.session_state:
 if "message_sent" not in st.session_state:
     st.session_state.message_sent = False
 if "dismissed_alerts" not in st.session_state:
-    st.session_state.dismissed_alerts = set()  # store system message IDs dismissed by this user
+    st.session_state.dismissed_alerts = set()
 
 # -----------------------
 # UI Components
@@ -224,20 +218,56 @@ def show_profile_setup():
             st.session_state["logged_in"] = True
             register_user(username, st.session_state.get("user_avatar"))
 
+# -----------------------
+# UPDATED MEDIA RENDERING
+# -----------------------
 def display_message(msg):
     avatar_img = BytesIO(msg["avatar"]) if msg["avatar"] else None
     with st.chat_message(msg["username"], avatar=avatar_img):
         st.markdown(f"**{msg['username']}**")
-        st.markdown(msg["content"])
 
+        if msg["type"] == "text":
+            st.markdown(msg["content"])
+        else:
+            file_path = msg["content"]
+            if not os.path.exists(file_path):
+                st.warning("File missing.")
+                return
+            ext = os.path.splitext(file_path)[1].lower()
+
+            if ext in [".png", ".jpg", ".jpeg", ".gif"]:
+                st.image(file_path, use_container_width=True)
+            elif ext in [".mp4", ".mov", ".mkv"]:
+                st.video(file_path)
+            elif ext in [".mp3", ".wav", ".ogg"]:
+                st.audio(file_path)
+            elif ext in [".pdf", ".txt"]:
+                if ext == ".pdf":
+                    with open(file_path, "rb") as f:
+                        pdf_data = f.read()
+                    b64_pdf = base64.b64encode(pdf_data).decode("utf-8")
+                    pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="600px"></iframe>'
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                else:
+                    with open(file_path, "r", errors="ignore") as f:
+                        st.text(f.read())
+            else:
+                with open(file_path, "rb") as f:
+                    data = f.read()
+                b64 = base64.b64encode(data).decode()
+                href = f'<a href="data:application/octet-stream;base64,{b64}" download="{os.path.basename(file_path)}">📁 Download {os.path.basename(file_path)}</a>'
+                st.markdown(href, unsafe_allow_html=True)
+
+# -----------------------
+# Chat UI
+# -----------------------
 def show_chat_ui():
     user = st.session_state.get("user", "Anonymous")
     
-    # Auto-refresh every 2 sec
     st_autorefresh(interval=2000, key="chat_autorefresh")
     update_user_activity(user)
 
-    # Sidebar: online users
+    # Sidebar
     st.sidebar.markdown("### Online Users")
     online_users = get_online_users(timeout=15)
     for u in online_users:
@@ -247,7 +277,6 @@ def show_chat_ui():
             cols[0].image(avatar_data, width=30)
         cols[1].write(u["username"])
 
-    # Sidebar: system messages
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Alerts")
     system_msgs = load_system_messages(limit=20)
@@ -258,9 +287,7 @@ def show_chat_ui():
             if cols[1].button("X", key=f"del_{msg['id']}"):
                 st.session_state.dismissed_alerts.add(msg["id"])
 
-    # Logout button
     if st.sidebar.button("Log Out"):
-        # Save "left" message before removing user and clearing session
         save_system_message(f"{user} left the chat")
         remove_user(user)
         for key in ["user", "user_avatar", "logged_in", "access_granted", "file_uploaded", "message_sent"]:
@@ -268,16 +295,15 @@ def show_chat_ui():
                 del st.session_state[key]
         st.session_state.dismissed_alerts.clear()
 
-    # Main chat area
+    # Main chat
     messages = load_messages()
     for msg in messages:
         display_message(msg)
 
-    # Chat input
     prompt = st.chat_input("Share and enjoy!")
     uploaded_file = st.file_uploader(
-        "Upload image/video/audio",
-        type=["png", "jpg", "jpeg", "mp4", "mp3", "wav"],
+        "Upload image/video/audio/document",
+        type=None,
         label_visibility="collapsed",
         key="file_uploader"
     )
