@@ -164,7 +164,6 @@ def load_messages():
     return result
 
 def delete_message(msg_id, username):
-    """Only delete if message belongs to the same user"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT username, content FROM messages WHERE id=?", (msg_id,))
@@ -247,7 +246,6 @@ def display_message(msg, current_user):
             if cols[1].button("delete", key=f"delmsg_{msg['id']}"):
                 delete_message(msg["id"], current_user)
                 
-
         if msg["type"] == "text":
             st.markdown(msg["content"])
         else:
@@ -299,13 +297,24 @@ def show_chat_ui():
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Alerts")
+
     system_msgs = load_system_messages(limit=20)
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
     for msg in system_msgs:
         if msg["id"] not in st.session_state.dismissed_alerts:
-            cols = st.sidebar.columns([4,1])
+            cols = st.sidebar.columns([4, 1])
             cols[0].info(msg["content"])
             if cols[1].button("X", key=f"del_alert_{msg['id']}"):
-                st.session_state.dismissed_alerts.add(msg["id"])
+                if user == "Debayan":
+                    # Delete globally for everyone
+                    c.execute("DELETE FROM system_messages WHERE id=?", (msg["id"],))
+                    conn.commit()
+                else:
+                    # Hide only for this user
+                    st.session_state.dismissed_alerts.add(msg["id"])
+    conn.close()
 
     if st.sidebar.button("Log Out"):
         save_system_message(f"{user} left the chat")
@@ -349,4 +358,3 @@ if __name__ == "__main__":
         show_profile_setup()
     else:
         show_login_ui()
-
