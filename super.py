@@ -246,7 +246,7 @@ def display_message(msg, current_user):
         if msg["username"] == current_user:
             if cols[1].button("delete", key=f"delmsg_{msg['id']}"):
                 delete_message(msg["id"], current_user)
-                st.experimental_rerun()
+                
 
         if msg["type"] == "text":
             st.markdown(msg["content"])
@@ -349,3 +349,4 @@ if __name__ == "__main__":
         show_profile_setup()
     else:
         show_login_ui()
+
