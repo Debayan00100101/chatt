@@ -11,9 +11,9 @@ import base64
 st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 
 # -----------------------
-# Paths & DB
+# Paths & DB (PERMANENT STORAGE)
 # -----------------------
-APP_DIR = os.path.join(os.path.expanduser("~"), ".snowflake_chat")
+APP_DIR = os.path.join(os.getcwd(), "snowflake_chat_data")
 os.makedirs(APP_DIR, exist_ok=True)
 
 DB_FILE = os.path.join(APP_DIR, "super_chat_delete_alert.db")
@@ -235,7 +235,7 @@ def show_profile_setup():
             register_user(username, st.session_state.get("user_avatar"))
 
 # -----------------------
-# Display messages with delete button
+# Display messages
 # -----------------------
 def display_message(msg, current_user):
     avatar_img = BytesIO(msg["avatar"]) if msg["avatar"] else None
@@ -308,11 +308,9 @@ def show_chat_ui():
             cols[0].info(msg["content"])
             if cols[1].button("X", key=f"del_alert_{msg['id']}"):
                 if user == "Debayan":
-                    # Delete globally for everyone
                     c.execute("DELETE FROM system_messages WHERE id=?", (msg["id"],))
                     conn.commit()
                 else:
-                    # Hide only for this user
                     st.session_state.dismissed_alerts.add(msg["id"])
     conn.close()
 
