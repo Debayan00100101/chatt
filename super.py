@@ -11,9 +11,15 @@ import base64
 st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
 
 # -----------------------
+# Permanent Stable Directory Fix
+# -----------------------
+BASE_DIR = os.path.expanduser("~/.snowflake_chat_permanent")
+os.makedirs(BASE_DIR, exist_ok=True)
+
+# -----------------------
 # Paths & DB (PERMANENT STORAGE)
 # -----------------------
-APP_DIR = os.path.join(os.getcwd(), "snowflake_chat_data")
+APP_DIR = os.path.join(BASE_DIR, "snowflake_chat_data")
 os.makedirs(APP_DIR, exist_ok=True)
 
 DB_FILE = os.path.join(APP_DIR, "super_chat_delete_alert.db")
@@ -306,7 +312,7 @@ def show_chat_ui():
         if msg["id"] not in st.session_state.dismissed_alerts:
             cols = st.sidebar.columns([4, 1])
             cols[0].info(msg["content"])
-            if cols[1].button("X", key=f"del_alert_{msg['id']}"):
+            if cols[1].button("X", key=f"del_alert_{msg['id']}"]):
                 if user == "Debayan":
                     c.execute("DELETE FROM system_messages WHERE id=?", (msg["id"],))
                     conn.commit()
