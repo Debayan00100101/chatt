@@ -1,58 +1,63 @@
 import streamlit as st
 import sqlite3
-import hashlib
 import os
-from io import BytesIO
-from streamlit_autorefresh import st_autorefresh
-import shutil
+import hashlib
 import time
+import smtplib
+import random
+import string
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from io import BytesIO
 import base64
 
-st.set_page_config(page_title="Snowflake", page_icon="❄", layout="wide")
+# -----------------------
+# App Configuration
+# -----------------------
+st.set_page_config(page_title="NetFox", layout="wide", page_icon="🦊")
 
-# -----------------------
-# Paths & DB (PERMANENT STORAGE)
-# -----------------------
-APP_DIR = os.path.join(os.getcwd(), "snowflake_chat_data")
+APP_DIR = os.path.join(os.getcwd(), "NetFox_chat_data")
 os.makedirs(APP_DIR, exist_ok=True)
-
-DB_FILE = os.path.join(APP_DIR, "super_chat_delete_alert.db")
+DB_FILE = os.path.join(APP_DIR, "netfox_chat.db")
 MEDIA_DIR = os.path.join(APP_DIR, "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # -----------------------
-# Secret code
-# -----------------------
-def _secure_secret_hash():
-    parts = ["73757065723030313030313031"]
-    secret_bytes = bytes.fromhex("".join(parts))
-    return hashlib.sha256(secret_bytes).hexdigest()
-
-SECRET_CODE_HASH = _secure_secret_hash()
-
-# -----------------------
-# DB Initialization
+# Database Initialization
 # -----------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
+    # Users table
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            email TEXT PRIMARY KEY,
+            username TEXT,
+            display_name TEXT,
+            avatar_path TEXT,
+            last_active REAL
+        )
+    """)
+    # Messages table
     c.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            avatar_path TEXT,
+            sender_email TEXT,
+            receiver_email TEXT,
             msg_type TEXT,
             content TEXT,
             timestamp REAL
         )
     """)
+    # Followers table
     c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            avatar_path TEXT,
-            last_active REAL
+        CREATE TABLE IF NOT EXISTS followers (
+            follower_email TEXT,
+            followed_email TEXT,
+            PRIMARY KEY(follower_email, followed_email)
         )
     """)
+    # System messages
     c.execute("""
         CREATE TABLE IF NOT EXISTS system_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,292 +72,261 @@ if not os.path.exists(DB_FILE):
     init_db()
 
 # -----------------------
-# User functions
+# Utility Functions
 # -----------------------
-def register_user(username, avatar):
+def send_otp_email(receiver_email, otp):
+    # Configure your SMTP email here
+    SMTP_SERVER = "smtp.gmail.com"
+    SMTP_PORT = 587
+    SMTP_USER = "YOUR_EMAIL@gmail.com"   # Replace with your email
+    SMTP_PASSWORD = "YOUR_APP_PASSWORD"  # Use App Password
+    
+    msg = MIMEMultipart()
+    msg['From'] = SMTP_USER
+    msg['To'] = receiver_email
+    msg['Subject'] = "NetFox OTP Verification"
+    msg.attach(MIMEText(f"Your OTP for NetFox login is: {otp}", 'plain'))
+
+    try:
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(SMTP_USER, receiver_email, msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        st.error(f"Failed to send OTP: {e}")
+        return False
+
+def generate_otp(length=6):
+    return ''.join(random.choices(string.digits, k=length))
+
+def save_user(email, username, display_name, avatar_bytes):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     avatar_path = None
-    if avatar:
-        avatar_name = f"{username}_avatar.png"
-        avatar_path = os.path.join(APP_DIR, avatar_name)
+    if avatar_bytes:
+        avatar_path = os.path.join(MEDIA_DIR, f"{email}_avatar.png")
         with open(avatar_path, "wb") as f:
-            f.write(avatar)
+            f.write(avatar_bytes)
     now = time.time()
     c.execute("""
-        INSERT INTO users (username, avatar_path, last_active)
-        VALUES (?, ?, ?)
-        ON CONFLICT(username) DO UPDATE SET avatar_path=excluded.avatar_path, last_active=excluded.last_active
-    """, (username, avatar_path, now))
+        INSERT INTO users (email, username, display_name, avatar_path, last_active)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(email) DO UPDATE SET
+            username=excluded.username,
+            display_name=excluded.display_name,
+            avatar_path=excluded.avatar_path,
+            last_active=excluded.last_active
+    """, (email, username, display_name, avatar_path, now))
     conn.commit()
     conn.close()
-    save_system_message(f"{username} joined the chat")
 
-def update_user_activity(username):
+def update_user_activity(email):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     now = time.time()
-    c.execute("UPDATE users SET last_active=? WHERE username=?", (now, username))
+    c.execute("UPDATE users SET last_active=? WHERE email=?", (now, email))
     conn.commit()
     conn.close()
 
-def remove_user(username):
+def save_message(sender_email, receiver_email, msg_type, content):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
-    c.execute("DELETE FROM users WHERE username=?", (username,))
+    content_ref = content
+    if msg_type != "text" and hasattr(content, 'read'):
+        # File upload
+        file_bytes = content.read()
+        ext = os.path.splitext(content.name)[1]
+        file_path = os.path.join(MEDIA_DIR, f"{sender_email}_{hashlib.md5(file_bytes).hexdigest()}{ext}")
+        with open(file_path, "wb") as f:
+            f.write(file_bytes)
+        content_ref = file_path
+    timestamp = time.time()
+    c.execute("""
+        INSERT INTO messages (sender_email, receiver_email, msg_type, content, timestamp)
+        VALUES (?, ?, ?, ?, ?)
+    """, (sender_email, receiver_email, msg_type, content_ref, timestamp))
     conn.commit()
     conn.close()
+    update_user_activity(sender_email)
 
-def get_online_users(timeout=15):
+def load_messages(receiver_email=None):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
-    now = time.time()
-    c.execute("SELECT username, avatar_path FROM users WHERE last_active>=?", (now - timeout,))
-    users = [{"username": row[0], "avatar_path": row[1]} for row in c.fetchall()]
+    if receiver_email:
+        c.execute("""
+            SELECT sender_email, msg_type, content FROM messages
+            WHERE receiver_email=? OR receiver_email IS NULL
+            ORDER BY timestamp ASC
+        """, (receiver_email,))
+    else:
+        c.execute("SELECT sender_email, msg_type, content FROM messages ORDER BY timestamp ASC")
+    msgs = c.fetchall()
+    conn.close()
+    return msgs
+
+def get_users():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    c = conn.cursor()
+    c.execute("SELECT email, username, display_name, avatar_path FROM users")
+    users = c.fetchall()
     conn.close()
     return users
 
 # -----------------------
-# Message functions
+# Session States
 # -----------------------
-def save_message(username, avatar, msg_type, content):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    c = conn.cursor()
-
-    avatar_path = None
-    if avatar:
-        avatar_name = f"{username}_avatar.png"
-        avatar_path = os.path.join(APP_DIR, avatar_name)
-        with open(avatar_path, "wb") as f:
-            f.write(avatar)
-
-    if msg_type != "text" and hasattr(content, 'read'):
-        ext = content.type.split("/")[-1] if hasattr(content, 'type') else "bin"
-        content_bytes = content.read()
-        content_name = f"{username}_{hashlib.md5(content_bytes).hexdigest()}.{ext}"
-        content_path = os.path.join(MEDIA_DIR, content_name)
-        with open(content_path, "wb") as f:
-            f.write(content_bytes)
-        content_ref = content_path
-    else:
-        content_ref = content if isinstance(content, str) else content.decode()
-
-    now = time.time()
-    c.execute(
-        "INSERT INTO messages (username, avatar_path, msg_type, content, timestamp) VALUES (?, ?, ?, ?, ?)",
-        (username, avatar_path, msg_type, content_ref, now)
-    )
-    conn.commit()
-    conn.close()
-    update_user_activity(username)
-
-def load_messages():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    c = conn.cursor()
-    c.execute("SELECT id, username, avatar_path, msg_type, content FROM messages ORDER BY id ASC")
-    result = []
-    for msg_id, username, avatar_path, msg_type, content_ref in c.fetchall():
-        avatar = open(avatar_path, "rb").read() if avatar_path and os.path.exists(avatar_path) else None
-        result.append({
-            "id": msg_id,
-            "username": username,
-            "avatar": avatar,
-            "type": msg_type,
-            "content": content_ref
-        })
-    conn.close()
-    return result
-
-def delete_message(msg_id, username):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    c = conn.cursor()
-    c.execute("SELECT username, content FROM messages WHERE id=?", (msg_id,))
-    row = c.fetchone()
-    if row and row[0] == username:
-        content_path = row[1]
-        if os.path.exists(content_path):
-            try:
-                os.remove(content_path)
-            except:
-                pass
-        c.execute("DELETE FROM messages WHERE id=?", (msg_id,))
-    conn.commit()
-    conn.close()
-
-def save_system_message(text):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    c = conn.cursor()
-    now = time.time()
-    c.execute("INSERT INTO system_messages (content, timestamp) VALUES (?, ?)", (text, now))
-    conn.commit()
-    conn.close()
-
-def load_system_messages(limit=50):
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    c = conn.cursor()
-    c.execute("SELECT id, content FROM system_messages ORDER BY id DESC LIMIT ?", (limit,))
-    msgs = [{"id": row[0], "content": row[1]} for row in c.fetchall()]
-    conn.close()
-    return msgs[::-1]
-
-# -----------------------
-# Session defaults
-# -----------------------
+if "step" not in st.session_state:
+    st.session_state.step = "login_email"
+if "otp" not in st.session_state:
+    st.session_state.otp = ""
+if "email" not in st.session_state:
+    st.session_state.email = ""
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
-if "file_uploaded" not in st.session_state:
-    st.session_state.file_uploaded = False
+if "user_avatar" not in st.session_state:
+    st.session_state.user_avatar = None
+if "username" not in st.session_state:
+    st.session_state.username = ""
+if "display_name" not in st.session_state:
+    st.session_state.display_name = ""
 if "message_sent" not in st.session_state:
     st.session_state.message_sent = False
-if "dismissed_alerts" not in st.session_state:
-    st.session_state.dismissed_alerts = set()
+if "file_uploaded" not in st.session_state:
+    st.session_state.file_uploaded = False
 
 # -----------------------
-# UI Components
+# Theme CSS
 # -----------------------
-def show_login_ui():
-    st.title("Snowflake Secure Group Login")
-    secret_input = st.text_input("Enter school Group Secret Code", type="password", placeholder="Secret Code")
-    if st.button("Unlock"):
-        entered_hash = hashlib.sha256(secret_input.encode()).hexdigest()
-        if entered_hash == SECRET_CODE_HASH:
-            st.session_state["access_granted"] = True
-            st.success("Access granted! double click")
+st.markdown("""
+<style>
+body {
+    background: linear-gradient(135deg, #d9c6ff, #e0d4ff);
+}
+.css-18e3th9 {
+    background: linear-gradient(135deg, #e0d4ff, #d9c6ff);
+}
+button, .stButton>button {
+    background: linear-gradient(135deg, #c496ff, #a47bff);
+    color: white;
+    border: none;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# -----------------------
+# Pages
+# -----------------------
+
+# ----- Email Login Page -----
+if st.session_state.step == "login_email":
+    st.title("NetFox Login")
+    email_input = st.text_input("Enter your email", placeholder="you@example.com")
+    if st.button("Next"):
+        if "@" in email_input and "." in email_input:
+            otp = generate_otp()
+            st.session_state.otp = otp
+            st.session_state.email = email_input
+            if send_otp_email(email_input, otp):
+                st.success(f"OTP sent to {email_input}")
+                st.session_state.step = "verify_otp"
         else:
-            st.error("Incorrect secret code. Access denied.")
+            st.error("Enter a valid email address.")
 
-def show_profile_setup():
-    st.title("Set Your Username and profile picture")
-    username = st.text_input("Enter your username:")
-    avatar = st.file_uploader("Upload your profile picture (optional)", type=["png", "jpg", "jpeg"])
-    if st.button("Enter Chat"):
-        if username.strip() == "":
-            st.error("Please enter a username.")
+# ----- OTP Verification Page -----
+elif st.session_state.step == "verify_otp":
+    st.title("Verify OTP")
+    otp_input = st.text_input(f"Enter OTP sent to {st.session_state.email}", type="password")
+    if st.button("Next"):
+        if otp_input == st.session_state.otp:
+            st.session_state.step = "profile_setup"
+            st.success("OTP verified!")
         else:
-            st.session_state["user"] = username
-            st.session_state["user_avatar"] = avatar.read() if avatar else None
-            st.session_state["logged_in"] = True
-            register_user(username, st.session_state.get("user_avatar"))
+            st.error("Incorrect OTP.")
 
-# -----------------------
-# Display messages
-# -----------------------
-def display_message(msg, current_user):
-    avatar_img = BytesIO(msg["avatar"]) if msg["avatar"] else None
-    with st.chat_message(msg["username"], avatar=avatar_img):
-        cols = st.columns([10, 1])
-        cols[0].markdown(f"**{msg['username']}**")
-        if msg["username"] == current_user:
-            if cols[1].button("delete", key=f"delmsg_{msg['id']}"):
-                delete_message(msg["id"], current_user)
-                
-        if msg["type"] == "text":
-            st.markdown(msg["content"])
+# ----- Profile Setup Page -----
+elif st.session_state.step == "profile_setup":
+    st.title("Set Up Profile")
+    username_input = st.text_input("Set your username")
+    display_name_input = st.text_input("Set your display name")
+    avatar_file = st.file_uploader("Upload avatar (optional)", type=["png", "jpg", "jpeg"])
+    if st.button("Finish Login"):
+        if username_input.strip() != "" and display_name_input.strip() != "":
+            avatar_bytes = avatar_file.read() if avatar_file else None
+            save_user(st.session_state.email, username_input, display_name_input, avatar_bytes)
+            st.session_state.username = username_input
+            st.session_state.display_name = display_name_input
+            st.session_state.user_avatar = avatar_bytes
+            st.session_state.logged_in = True
+            st.session_state.step = "main_chat"
         else:
-            file_path = msg["content"]
-            if not os.path.exists(file_path):
-                st.warning("File missing.")
-                return
-            ext = os.path.splitext(file_path)[1].lower()
+            st.error("Username and display name are required.")
 
-            if ext in [".png", ".jpg", ".jpeg", ".gif"]:
-                st.image(file_path, use_container_width=True)
-            elif ext in [".mp4", ".mov", ".mkv"]:
-                st.video(file_path)
-            elif ext in [".mp3", ".wav", ".ogg"]:
-                st.audio(file_path)
-            elif ext in [".pdf", ".txt"]:
-                if ext == ".pdf":
-                    with open(file_path, "rb") as f:
-                        pdf_data = f.read()
-                    b64_pdf = base64.b64encode(pdf_data).decode("utf-8")
-                    pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="600px"></iframe>'
-                    st.markdown(pdf_display, unsafe_allow_html=True)
-                else:
-                    with open(file_path, "r", errors="ignore") as f:
-                        st.text(f.read())
-            else:
-                with open(file_path, "rb") as f:
-                    data = f.read()
-                b64 = base64.b64encode(data).decode()
-                href = f'<a href="data:application/octet-stream;base64,{b64}" download="{os.path.basename(file_path)}">📁 Download {os.path.basename(file_path)}</a>'
-                st.markdown(href, unsafe_allow_html=True)
-
-# -----------------------
-# Chat UI
-# -----------------------
-def show_chat_ui():
-    user = st.session_state.get("user", "Anonymous")
-    st_autorefresh(interval=2000, key="chat_autorefresh")
-    update_user_activity(user)
-
-    st.sidebar.markdown("### Online Users")
-    online_users = get_online_users(timeout=15)
-    for u in online_users:
-        avatar_data = open(u["avatar_path"], "rb").read() if u["avatar_path"] and os.path.exists(u["avatar_path"]) else None
-        cols = st.sidebar.columns([1, 3])
-        if avatar_data:
-            cols[0].image(avatar_data, width=30)
-        cols[1].write(u["username"])
-
+# ----- Main Chat Page -----
+elif st.session_state.logged_in or st.session_state.step == "main_chat":
+    st.session_state.step = "main_chat"
+    st.title("NetFox Chat")
+    
+    # Sidebar: Online Users
+    st.sidebar.title("Online Users")
+    users = get_users()
+    for u in users:
+        avatar_img = None
+        if u[3] and os.path.exists(u[3]):
+            avatar_img = u[3]
+            st.sidebar.image(avatar_img, width=30)
+        st.sidebar.write(u[2] or u[1])
+    
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### Alerts")
-
-    system_msgs = load_system_messages(limit=20)
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    c = conn.cursor()
-
-    for msg in system_msgs:
-        if msg["id"] not in st.session_state.dismissed_alerts:
-            cols = st.sidebar.columns([4, 1])
-            cols[0].info(msg["content"])
-            if cols[1].button("X", key=f"del_alert_{msg['id']}"):
-                if user == "Debayan":
-                    c.execute("DELETE FROM system_messages WHERE id=?", (msg["id"],))
-                    conn.commit()
-                else:
-                    st.session_state.dismissed_alerts.add(msg["id"])
-    conn.close()
-
     if st.sidebar.button("Log Out"):
-        save_system_message(f"{user} left the chat")
-        remove_user(user)
-        for key in ["user", "user_avatar", "logged_in", "access_granted", "file_uploaded", "message_sent"]:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.session_state.dismissed_alerts.clear()
-
+        st.session_state.step = "login_email"
+        st.session_state.logged_in = False
+        st.session_state.email = ""
+        st.session_state.username = ""
+        st.session_state.display_name = ""
+        st.session_state.user_avatar = None
+        st.success("Logged out successfully.")
+    
+    # Display messages
     messages = load_messages()
-    for msg in messages:
-        display_message(msg, user)
-
-    prompt = st.chat_input("Share and enjoy!")
-    uploaded_file = st.file_uploader(
-        "Upload image/video/audio/document",
-        type=None,
-        label_visibility="collapsed",
-        key="file_uploader"
-    )
-
+    for sender_email, msg_type, content in messages:
+        sender_name = sender_email
+        for u in users:
+            if u[0] == sender_email:
+                sender_name = u[2] or u[1]
+                avatar_path = u[3]
+        with st.chat_message(sender_name):
+            if msg_type == "text":
+                st.markdown(content)
+            else:
+                if os.path.exists(content):
+                    ext = os.path.splitext(content)[1].lower()
+                    if ext in [".png", ".jpg", ".jpeg", ".gif"]:
+                        st.image(content)
+                    elif ext in [".mp4", ".mov", ".mkv"]:
+                        st.video(content)
+                    elif ext in [".mp3", ".wav", ".ogg"]:
+                        st.audio(content)
+                    else:
+                        with open(content, "rb") as f:
+                            data = f.read()
+                        b64 = base64.b64encode(data).decode()
+                        href = f'<a href="data:application/octet-stream;base64,{b64}" download="{os.path.basename(content)}">📁 Download {os.path.basename(content)}</a>'
+                        st.markdown(href, unsafe_allow_html=True)
+    
+    # Chat input
+    prompt = st.chat_input("Type your message")
+    uploaded_file = st.file_uploader("Upload file", type=None, label_visibility="collapsed")
+    
     if prompt and not st.session_state.message_sent:
-        save_message(user, st.session_state.get("user_avatar"), "text", prompt)
+        save_message(st.session_state.email, None, "text", prompt)
         st.session_state.message_sent = True
     if not prompt:
         st.session_state.message_sent = False
-
-    if uploaded_file is not None and not st.session_state.file_uploaded:
-        save_message(user, st.session_state.get("user_avatar"), uploaded_file.type.split("/")[0], uploaded_file)
+    
+    if uploaded_file and not st.session_state.file_uploaded:
+        save_message(st.session_state.email, None, uploaded_file.type.split("/")[0], uploaded_file)
         st.session_state.file_uploaded = True
     if uploaded_file is None:
         st.session_state.file_uploaded = False
-
-# -----------------------
-# Main
-# -----------------------
-if __name__ == "__main__":
-    if st.session_state.get("logged_in", False):
-        show_chat_ui()
-    elif st.session_state.get("access_granted", False):
-        show_profile_setup()
-    else:
-        show_login_ui()
