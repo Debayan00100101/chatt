@@ -3,16 +3,11 @@ import sqlite3
 import os
 import hashlib
 import time
-import smtplib
-import random
-import string
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from io import BytesIO
 import base64
 
 # -----------------------
-# App Configuration
+# App Config
 # -----------------------
 st.set_page_config(page_title="NetFox", layout="wide", page_icon="🦊")
 
@@ -23,44 +18,27 @@ MEDIA_DIR = os.path.join(APP_DIR, "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # -----------------------
-# Database Initialization
+# Database Init
 # -----------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
-    # Users table
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             email TEXT PRIMARY KEY,
+            password TEXT,
             username TEXT,
             display_name TEXT,
             avatar_path TEXT,
             last_active REAL
         )
     """)
-    # Messages table
     c.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sender_email TEXT,
             receiver_email TEXT,
             msg_type TEXT,
-            content TEXT,
-            timestamp REAL
-        )
-    """)
-    # Followers table
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS followers (
-            follower_email TEXT,
-            followed_email TEXT,
-            PRIMARY KEY(follower_email, followed_email)
-        )
-    """)
-    # System messages
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS system_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
             content TEXT,
             timestamp REAL
         )
@@ -74,34 +52,10 @@ if not os.path.exists(DB_FILE):
 # -----------------------
 # Utility Functions
 # -----------------------
-def send_otp_email(receiver_email, otp):
-    # Configure your SMTP email here
-    SMTP_SERVER = "smtp.gmail.com"
-    SMTP_PORT = 587
-    SMTP_USER = "YOUR_EMAIL@gmail.com"   # Replace with your email
-    SMTP_PASSWORD = "YOUR_APP_PASSWORD"  # Use App Password
-    
-    msg = MIMEMultipart()
-    msg['From'] = SMTP_USER
-    msg['To'] = receiver_email
-    msg['Subject'] = "NetFox OTP Verification"
-    msg.attach(MIMEText(f"Your OTP for NetFox login is: {otp}", 'plain'))
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, receiver_email, msg.as_string())
-        server.quit()
-        return True
-    except Exception as e:
-        st.error(f"Failed to send OTP: {e}")
-        return False
-
-def generate_otp(length=6):
-    return ''.join(random.choices(string.digits, k=length))
-
-def save_user(email, username, display_name, avatar_bytes):
+def create_user(email, password, username, display_name, avatar_bytes):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     avatar_path = None
@@ -111,16 +65,21 @@ def save_user(email, username, display_name, avatar_bytes):
             f.write(avatar_bytes)
     now = time.time()
     c.execute("""
-        INSERT INTO users (email, username, display_name, avatar_path, last_active)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(email) DO UPDATE SET
-            username=excluded.username,
-            display_name=excluded.display_name,
-            avatar_path=excluded.avatar_path,
-            last_active=excluded.last_active
-    """, (email, username, display_name, avatar_path, now))
+        INSERT INTO users (email, password, username, display_name, avatar_path, last_active)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (email, hash_password(password), username, display_name, avatar_path, now))
     conn.commit()
     conn.close()
+
+def verify_user(email, password):
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    c = conn.cursor()
+    c.execute("SELECT password FROM users WHERE email=?", (email,))
+    row = c.fetchone()
+    conn.close()
+    if row and row[0] == hash_password(password):
+        return True
+    return False
 
 def update_user_activity(email):
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -135,7 +94,6 @@ def save_message(sender_email, receiver_email, msg_type, content):
     c = conn.cursor()
     content_ref = content
     if msg_type != "text" and hasattr(content, 'read'):
-        # File upload
         file_bytes = content.read()
         ext = os.path.splitext(content.name)[1]
         file_path = os.path.join(MEDIA_DIR, f"{sender_email}_{hashlib.md5(file_bytes).hexdigest()}{ext}")
@@ -174,43 +132,65 @@ def get_users():
     conn.close()
     return users
 
+def is_owner(username):
+    return username == "_yes_its_dragon_"
+
 # -----------------------
-# Session States
+# Session State
 # -----------------------
 if "step" not in st.session_state:
-    st.session_state.step = "login_email"
-if "otp" not in st.session_state:
-    st.session_state.otp = ""
-if "email" not in st.session_state:
-    st.session_state.email = ""
+    st.session_state.step = "login_signup"
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
-if "user_avatar" not in st.session_state:
-    st.session_state.user_avatar = None
+if "email" not in st.session_state:
+    st.session_state.email = ""
 if "username" not in st.session_state:
     st.session_state.username = ""
 if "display_name" not in st.session_state:
     st.session_state.display_name = ""
+if "user_avatar" not in st.session_state:
+    st.session_state.user_avatar = None
 if "message_sent" not in st.session_state:
     st.session_state.message_sent = False
 if "file_uploaded" not in st.session_state:
     st.session_state.file_uploaded = False
 
 # -----------------------
-# Theme CSS
+# Shiny Purple Gradient CSS
 # -----------------------
 st.markdown("""
 <style>
-body {
-    background: linear-gradient(135deg, #d9c6ff, #e0d4ff);
+body, .stApp, .main, .block-container, .css-1d391kg {
+  background: linear-gradient(270deg, #4b00cc, #6b2cff, #5b1acc, #7b3eff);
+  background-size: 800% 800%;
+  animation: gradientAnimation 15s ease infinite;
+  color: #fff !important;
 }
-.css-18e3th9 {
-    background: linear-gradient(135deg, #e0d4ff, #d9c6ff);
+[data-testid="stSidebar"] {
+  background: linear-gradient(270deg, #6b2cff, #4b00cc, #7b3eff, #5b1acc);
+  background-size: 800% 800%;
+  animation: gradientAnimation 15s ease infinite;
 }
 button, .stButton>button {
-    background: linear-gradient(135deg, #c496ff, #a47bff);
-    color: white;
-    border: none;
+  background: linear-gradient(135deg, #6b2cff, #7b3eff) !important;
+  color: white !important;
+  border: none !important;
+  font-weight: bold;
+}
+input, textarea {
+  background: rgba(255,255,255,0.15) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 5px !important;
+}
+.stChatMessage {
+  background: rgba(255,255,255,0.05) !important;
+  border-radius: 10px !important;
+}
+@keyframes gradientAnimation {
+    0% {background-position: 0% 50%;}
+    50% {background-position: 100% 50%;}
+    100% {background-position: 0% 50%;}
 }
 </style>
 """, unsafe_allow_html=True)
@@ -218,84 +198,116 @@ button, .stButton>button {
 # -----------------------
 # Pages
 # -----------------------
+# ----- Login / Signup -----
+if st.session_state.step == "login_signup":
+    st.title("NetFox Login / Signup")
+    email_input = st.text_input("Enter your NetFox email (example@netfox.ai)", placeholder="example@netfox.ai")
+    password_input = st.text_input("Enter password", type="password")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Login"):
+            if verify_user(email_input, password_input):
+                st.success("Login successful!")
+                st.session_state.email = email_input
+                st.session_state.logged_in = True
+                # get username and display_name
+                conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+                c = conn.cursor()
+                c.execute("SELECT username, display_name, avatar_path FROM users WHERE email=?", (email_input,))
+                row = c.fetchone()
+                conn.close()
+                st.session_state.username = row[0]
+                st.session_state.display_name = row[1]
+                if row[2] and os.path.exists(row[2]):
+                    with open(row[2], "rb") as f:
+                        st.session_state.user_avatar = f.read()
+                st.session_state.step = "main_chat"
+            else:
+                st.error("Invalid credentials or account does not exist.")
+    with col2:
+        if st.button("Sign Up"):
+            conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+            c = conn.cursor()
+            c.execute("SELECT * FROM users WHERE email=?", (email_input,))
+            if c.fetchone():
+                st.error("Email already exists. Please login.")
+            elif email_input.strip() == "" or password_input.strip() == "":
+                st.error("Email and password required.")
+            else:
+                st.session_state.email = email_input
+                st.session_state.temp_password = password_input
+                st.session_state.step = "profile_setup"
+            conn.close()
 
-# ----- Email Login Page -----
-if st.session_state.step == "login_email":
-    st.title("NetFox Login")
-    email_input = st.text_input("Enter your email", placeholder="you@example.com")
-    if st.button("Next"):
-        if "@" in email_input and "." in email_input:
-            otp = generate_otp()
-            st.session_state.otp = otp
-            st.session_state.email = email_input
-            if send_otp_email(email_input, otp):
-                st.success(f"OTP sent to {email_input}")
-                st.session_state.step = "verify_otp"
-        else:
-            st.error("Enter a valid email address.")
-
-# ----- OTP Verification Page -----
-elif st.session_state.step == "verify_otp":
-    st.title("Verify OTP")
-    otp_input = st.text_input(f"Enter OTP sent to {st.session_state.email}", type="password")
-    if st.button("Next"):
-        if otp_input == st.session_state.otp:
-            st.session_state.step = "profile_setup"
-            st.success("OTP verified!")
-        else:
-            st.error("Incorrect OTP.")
-
-# ----- Profile Setup Page -----
+# ----- Profile Setup -----
 elif st.session_state.step == "profile_setup":
-    st.title("Set Up Profile")
-    username_input = st.text_input("Set your username")
-    display_name_input = st.text_input("Set your display name")
-    avatar_file = st.file_uploader("Upload avatar (optional)", type=["png", "jpg", "jpeg"])
+    st.title("Set Your Profile")
+    username_input = st.text_input("Username")
+    display_name_input = st.text_input("Display Name")
+    avatar_file = st.file_uploader("Upload Avatar (optional)", type=["png","jpg","jpeg"])
     if st.button("Finish Login"):
-        if username_input.strip() != "" and display_name_input.strip() != "":
-            avatar_bytes = avatar_file.read() if avatar_file else None
-            save_user(st.session_state.email, username_input, display_name_input, avatar_bytes)
-            st.session_state.username = username_input
-            st.session_state.display_name = display_name_input
-            st.session_state.user_avatar = avatar_bytes
-            st.session_state.logged_in = True
-            st.session_state.step = "main_chat"
-        else:
-            st.error("Username and display name are required.")
+        avatar_bytes = avatar_file.read() if avatar_file else None
+        password = getattr(st.session_state, "temp_password", password_input)
+        create_user(st.session_state.email, password, username_input, display_name_input, avatar_bytes)
+        st.session_state.username = username_input
+        st.session_state.display_name = display_name_input
+        st.session_state.user_avatar = avatar_bytes
+        st.session_state.logged_in = True
+        st.session_state.step = "main_chat"
+        st.success("Profile setup complete!")
 
 # ----- Main Chat Page -----
 elif st.session_state.logged_in or st.session_state.step == "main_chat":
     st.session_state.step = "main_chat"
-    st.title("NetFox Chat")
-    
-    # Sidebar: Online Users
-    st.sidebar.title("Online Users")
-    users = get_users()
-    for u in users:
-        avatar_img = None
-        if u[3] and os.path.exists(u[3]):
-            avatar_img = u[3]
-            st.sidebar.image(avatar_img, width=30)
-        st.sidebar.write(u[2] or u[1])
+    st.title(f"NetFox Chat - {st.session_state.display_name}")
+
+    # Sidebar: Online Users + Navigation
+    st.sidebar.title("Navigation")
+    if st.session_state.user_avatar:
+        st.sidebar.image(st.session_state.user_avatar, width=50)
+    st.sidebar.write(st.session_state.display_name)
     
     st.sidebar.markdown("---")
     if st.sidebar.button("Log Out"):
-        st.session_state.step = "login_email"
+        st.session_state.step = "login_signup"
         st.session_state.logged_in = False
         st.session_state.email = ""
         st.session_state.username = ""
         st.session_state.display_name = ""
         st.session_state.user_avatar = None
-        st.success("Logged out successfully.")
-    
+        st.success("Logged out.")
+
+    # Owner tab for _yes_its_dragon_
+    if is_owner(st.session_state.username):
+        st.sidebar.markdown("### Owner Panel")
+        if st.sidebar.button("View All Users"):
+            st.subheader("All Users Data")
+            conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+            c = conn.cursor()
+            c.execute("SELECT email, password, username, display_name FROM users")
+            rows = c.fetchall()
+            conn.close()
+            for row in rows:
+                st.markdown(f"**Email:** {row[0]} | **Password Hash:** {row[1]} | **Username:** {row[2]} | **Display Name:** {row[3]}")
+        if st.sidebar.button("View All Messages"):
+            st.subheader("All Messages")
+            msgs = load_messages()
+            users = get_users()
+            for sender_email, msg_type, content in msgs:
+                sender_name = sender_email
+                for u in users:
+                    if u[0] == sender_email:
+                        sender_name = u[2] or u[1]
+                st.markdown(f"**{sender_name}** ({msg_type}): {content}")
+
     # Display messages
     messages = load_messages()
+    users = get_users()
     for sender_email, msg_type, content in messages:
         sender_name = sender_email
         for u in users:
             if u[0] == sender_email:
                 sender_name = u[2] or u[1]
-                avatar_path = u[3]
         with st.chat_message(sender_name):
             if msg_type == "text":
                 st.markdown(content)
